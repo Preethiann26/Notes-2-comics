@@ -71,12 +71,69 @@ function stripJsonFences(raw) {
   return raw.replace(/^```json\s*|^```\s*|```$/g, "").trim();
 }
 
+// Structured output schemas - these force Gemini to return valid JSON matching
+// this exact shape, instead of relying on the model to format free-text JSON
+// correctly (which occasionally broke on notes containing special characters).
+const PANELS_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    panels: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          caption: { type: "STRING" },
+          visualDescription: { type: "STRING" },
+        },
+        required: ["caption", "visualDescription"],
+      },
+    },
+  },
+  required: ["panels"],
+};
+
+const MINDMAP_QUIZ_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    mindMap: {
+      type: "OBJECT",
+      properties: {
+        mainTopic: { type: "STRING" },
+        keyConcepts: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              title: { type: "STRING" },
+              details: { type: "ARRAY", items: { type: "STRING" } },
+            },
+            required: ["title", "details"],
+          },
+        },
+      },
+      required: ["mainTopic", "keyConcepts"],
+    },
+    questions: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          question: { type: "STRING" },
+          options: { type: "ARRAY", items: { type: "STRING" } },
+          correctIndex: { type: "INTEGER" },
+        },
+        required: ["question", "options", "correctIndex"],
+      },
+    },
+  },
+  required: ["mindMap", "questions"],
+};
+
 /** Break notes into N comic panel scenes (caption + visual description). */
 async function planComicPanels(notes, panelCount, style) {
   const prompt = `You are a comic script writer for students. Turn study notes into a short comic strip that teaches the concept.
-Return ONLY valid JSON, no markdown fences, no extra text. Shape:
-{"panels": [{"caption": "short caption (max 15 words)", "visualDescription": "detailed scene description for an illustrator, no text/words/letters in the image itself"}]}
 Produce exactly ${panelCount} panels forming a clear, engaging, easy-to-follow sequence that explains the notes.
+Each panel needs a short caption (max 15 words) and a detailed visual scene description for an illustrator (no text/words/letters in the image itself).
 
 Notes:
 """${notes}"""
@@ -86,7 +143,10 @@ Art style for each visual description: ${style}.`;
   const response = await ai.models.generateContent({
     model: TEXT_MODEL,
     contents: prompt,
-    config: { responseMimeType: "application/json" },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: PANELS_SCHEMA,
+    },
   });
 
   const parsed = JSON.parse(stripJsonFences(response.text.trim()));
@@ -120,18 +180,6 @@ async function planMindMapAndQuiz(notes, questionCount) {
   const prompt = `You are a study-tool AI. From the given notes, produce:
 1. A mind map: one main topic, and 3 key concepts, each with 2 short supporting details.
 2. A multiple-choice quiz with exactly ${questionCount} questions testing the notes, each with 4 options and one correct answer (0-indexed).
-Return ONLY valid JSON, no markdown fences, no extra text. Shape:
-{
-  "mindMap": {
-    "mainTopic": "short topic name",
-    "keyConcepts": [
-      {"title": "concept name", "details": ["detail A", "detail B"]}
-    ]
-  },
-  "questions": [
-    {"question": "...", "options": ["...", "...", "...", "..."], "correctIndex": 0}
-  ]
-}
 
 Notes:
 """${notes}"""`;
@@ -139,7 +187,10 @@ Notes:
   const response = await ai.models.generateContent({
     model: TEXT_MODEL,
     contents: prompt,
-    config: { responseMimeType: "application/json" },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: MINDMAP_QUIZ_SCHEMA,
+    },
   });
 
   const parsed = JSON.parse(stripJsonFences(response.text.trim()));
