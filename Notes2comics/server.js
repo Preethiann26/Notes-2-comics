@@ -2,15 +2,19 @@
 // Turns study notes into: (1) a comic strip, (2) a mind map, (3) a quiz.
 // Also serves the frontend from /public, so one deployment = one link.
 //
-// Uses Google's Gemini API, which has a genuine free tier (no card required)
-// via an API key from https://aistudio.google.com/apikey
+// Text (comic script, mind map, quiz) uses Google's Gemini API - free tier,
+// API key from https://aistudio.google.com/apikey
+//
+// Images use Pollinations.ai - a genuinely free, no-signup, no-API-key image
+// generation service (https://pollinations.ai). This avoids Gemini's image
+// models, which currently require billing even on "free tier" projects.
 
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 require("dotenv").config();
-const { GoogleGenAI, Modality } = require("@google/genai");
+const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,11 +26,13 @@ const DEFAULT_QUESTION_COUNT = 5;
 const MAX_QUESTION_COUNT = 10;
 
 const TEXT_MODEL = "gemini-3.5-flash";
-const IMAGE_MODEL = "gemini-2.5-flash-image";
+// Pollinations' anonymous access is rate-limited to roughly 1 request per
+// 15 seconds - space out panel image requests to stay under that.
+const IMAGE_GEN_DELAY_MS = 5000;
 
 if (!process.env.GEMINI_API_KEY) {
   console.warn(
-    "WARNING: GEMINI_API_KEY is not set. Comic/quiz generation will fail until you set it " +
+    "WARNING: GEMINI_API_KEY is not set. Comic script/quiz generation will fail until you set it " +
       "(in .env locally, or your host's environment variables in production). " +
       "Get a free key at https://aistudio.google.com/apikey"
   );
@@ -90,22 +96,23 @@ Art style for each visual description: ${style}.`;
   return parsed.panels.slice(0, panelCount);
 }
 
-/** Generate one comic-style image, return base64 PNG. */
+/** Generate one comic-style image via Pollinations.ai, return base64 (no data: prefix). */
 async function generatePanelImage(visualDescription, style) {
   const prompt = `Comic book panel illustration, ${style} style. Scene: ${visualDescription}. No text, no letters, no speech bubbles in the image.`;
+  const encodedPrompt = encodeURIComponent(prompt);
+  const seed = Math.floor(Math.random() * 1_000_000);
+  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
 
-  const response = await ai.models.generateContent({
-    model: IMAGE_MODEL,
-    contents: prompt,
-    config: { responseModalities: [Modality.TEXT, Modality.IMAGE] },
-  });
-
-  const parts = response.candidates?.[0]?.content?.parts || [];
-  const imagePart = parts.find((p) => p.inlineData);
-  if (!imagePart) {
-    throw new Error("Model did not return an image for this panel.");
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Image generation failed with status ${response.status}`);
   }
-  return imagePart.inlineData.data;
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer).toString("base64");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Build a mind map + multiple-choice quiz from notes. */
@@ -164,14 +171,15 @@ app.post("/api/generate-comic", async (req, res) => {
 
     const panels = await planComicPanels(notes, count, artStyle);
 
-    // Generate images one at a time (not in parallel) - the free tier has
-    // strict per-minute request limits, and parallel bursts trip them faster.
+    // Generate images one at a time, with a delay between each - Pollinations'
+    // free anonymous access is rate-limited, and bursts get throttled/blocked.
     const panelsWithImages = [];
-    for (const panel of panels) {
-      const imageB64 = await generatePanelImage(panel.visualDescription, artStyle);
+    for (let i = 0; i < panels.length; i++) {
+      if (i > 0) await sleep(IMAGE_GEN_DELAY_MS);
+      const imageB64 = await generatePanelImage(panels[i].visualDescription, artStyle);
       panelsWithImages.push({
-        caption: panel.caption,
-        imageBase64: `data:image/png;base64,${imageB64}`,
+        caption: panels[i].caption,
+        imageBase64: `data:image/jpeg;base64,${imageB64}`,
       });
     }
 
