@@ -21,8 +21,8 @@ const MAX_PANEL_COUNT = 6;
 const DEFAULT_QUESTION_COUNT = 5;
 const MAX_QUESTION_COUNT = 10;
 
-const TEXT_MODEL = "gemini-2.5-flash";
-const IMAGE_MODEL = "gemini-2.5-flash-image";
+const TEXT_MODEL = "gemini-3.5-flash";
+const IMAGE_MODEL = "gemini-3.1-flash-image";
 
 if (!process.env.GEMINI_API_KEY) {
   console.warn(
